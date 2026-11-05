@@ -1,0 +1,18 @@
+// Signing for installing on your own iPhone with a free Apple ID
+// (Xcode Personal Team). See docs/ios.md.
+//
+// 1. Copy this file:
+//      cp ios/Signing.local.xcconfig.example ios/Signing.local.xcconfig
+// 2. Replace YOUR_TEAM_ID with the 10-character id from
+//    Xcode → Settings → Accounts → your Personal Team.
+// 3. With the iPhone plugged in, run
+//      API_BASE_URL=https://YOUR_API_HOSTNAME scripts/ios-install-device.sh
+//
+// The copy is in .gitignore and must never be committed. Without it the
+// project still builds for the Simulator.
+
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
+
+// Any reverse-DNS id you like. A free team cannot use an id someone else
+// has already registered, so change it if Xcode says it is taken.
+PRODUCT_BUNDLE_IDENTIFIER = local.new2u.app

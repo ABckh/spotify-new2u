@@ -1,0 +1,16 @@
+// Release build settings.
+// The phone reaches your server over HTTPS.
+//
+// PLACEHOLDER: replace "api-hostname-not-set.invalid" with your server's
+// API_HOSTNAME, or pass API_BASE_URL to xcodebuild, and keep the
+// "https:/$()/" part. The ".invalid" name can never resolve, and the app
+// treats it as "Server address not configured" until it is replaced.
+// The "/$()/" stops xcconfig from reading "//" as the start of a comment.
+API_BASE_URL = https:/$()/api-hostname-not-set.invalid
+
+// Signing. The bundle id below is the Simulator default.
+// To install on an iPhone, ios/Signing.local.xcconfig sets your
+// DEVELOPMENT_TEAM and PRODUCT_BUNDLE_IDENTIFIER, and wins over this line.
+// That file is not in git; "#include?" skips it quietly when it is missing.
+PRODUCT_BUNDLE_IDENTIFIER = app.new2u.New2U
+#include? "../Signing.local.xcconfig"

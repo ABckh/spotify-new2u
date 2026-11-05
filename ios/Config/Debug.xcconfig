@@ -1,0 +1,11 @@
+// Debug (Simulator) build settings.
+// The Simulator talks to the API running on the Mac. The "/$()/" stops
+// xcconfig from reading "//" as the start of a comment.
+API_BASE_URL = http:/$()/127.0.0.1:8000
+
+// Signing. The bundle id below is the Simulator default.
+// To install on an iPhone, ios/Signing.local.xcconfig sets your
+// DEVELOPMENT_TEAM and PRODUCT_BUNDLE_IDENTIFIER, and wins over this line.
+// That file is not in git; "#include?" skips it quietly when it is missing.
+PRODUCT_BUNDLE_IDENTIFIER = app.new2u.New2U
+#include? "../Signing.local.xcconfig"

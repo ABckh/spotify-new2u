@@ -1,0 +1,132 @@
+# VPS override (WHO-175): images from GHCR, Caddy in front, journald logging.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d
+#
+# Needs Docker Compose 2.24 or newer for `!reset` (deploy/bootstrap.sh installs
+# a newer one). Settings that only this file reads, besides the keys in .env:
+#
+#   API_IMAGE     image for api and poller, by digest: ghcr.io/OWNER/new2u@sha256:...
+#   API_HOSTNAME  public name or IP address Caddy serves and gets a certificate
+#                 for (an IPv6 address in brackets)
+#   CADDY_TLS     "public" (a name, default), "public_ip" (an IP address) or
+#                 "internal" for test targets
+#   CADDY_DEFAULT_SNI  API_HOSTNAME without IPv6 brackets
+# scripts/deploy-remote.sh sets the two CADDY_ keys from API_HOSTNAME.
+#
+# deploy/env.template lists every key and where its value comes from.
+#
+# Docker's default json-file driver keeps container output forever. PRD P12 and
+# fixed string W6 promise every server log is gone from the server after 14 days
+# (and from backups within 7 days after that), so every service, including
+# postgres and caddy, must use this logging block. The retention itself is set
+# on the host by deploy/journald/new2u.conf; see docs/self-hosting.md "Logs".
+
+x-logging: &journald
+  driver: journald
+  options:
+    tag: "{{.Name}}"
+    # No local copy beside the journal (Docker's "dual logging" cache), so the
+    # journal's retention is the only one that applies.
+    cache-disabled: "true"
+
+services:
+  postgres:
+    logging: *journald
+    # Caddy is the only service that publishes a port on the VPS. Postgres is
+    # reached from the host with `docker compose exec postgres psql`.
+    ports: !reset []
+    # Runs only with the localdb profile. scripts/deploy-remote.sh sets
+    # COMPOSE_PROFILES=localdb in .env unless DATABASE_HOST names a database
+    # server of its own (docs/self-hosting.md "External database"); then no postgres runs here.
+    profiles: [localdb]
+    # Memory for the app server's postgres (8 GB, shared with api, poller and
+    # caddy). With the defaults (128MB buffers, 4MB work_mem) the whole-history
+    # album queries sorted on disk once a history import added ~100k plays.
+    # `command` replaces the base file's list, so its two logging flags are
+    # repeated here: keep them in step with docker-compose.yml.
+    command:
+      - postgres
+      - -c
+      - log_error_verbosity=terse
+      - -c
+      - log_min_error_statement=panic
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - effective_cache_size=4GB
+      - -c
+      - work_mem=32MB
+      - -c
+      - maintenance_work_mem=256MB
+    # Docker's 64 MB /dev/shm is too small for parallel hash joins.
+    shm_size: 256mb
+
+  api:
+    # The image CI built and pushed for this commit; nothing is built on the server.
+    build: !reset null
+    image: ${API_IMAGE:?set API_IMAGE to the image to run}
+    logging: *journald
+    ports: !reset []
+    environment:
+      # Caddy's fixed address below, and nothing broader: only Caddy's
+      # X-Forwarded-For is believed (WHO-36 F2). Overrides the .env value.
+      FORWARDED_ALLOW_IPS: 10.201.0.2
+      # The postgres service here, or DATABASE_HOST over TLS (sslmode and
+      # channel_binding require, set by scripts/deploy-remote.sh). POSTGRES_PASSWORD is hex: no escaping.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DATABASE_HOST:-postgres}:5432/${POSTGRES_DB}?sslmode=${DATABASE_SSLMODE:-prefer}&channel_binding=${DATABASE_CHANNEL_BINDING:-prefer}
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+        # Not started (no localdb profile) when the database is elsewhere.
+        required: false
+
+  poller:
+    build: !reset null
+    image: ${API_IMAGE:?set API_IMAGE to the image to run}
+    logging: *journald
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DATABASE_HOST:-postgres}:5432/${POSTGRES_DB}?sslmode=${DATABASE_SSLMODE:-prefer}&channel_binding=${DATABASE_CHANNEL_BINDING:-prefer}
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+        required: false
+
+  caddy:
+    # caddy:2.11.7, pinned by the digest of the multi-arch index (amd64 and arm64).
+    image: caddy@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489
+    restart: unless-stopped
+    environment:
+      API_HOSTNAME: ${API_HOSTNAME:?set API_HOSTNAME to the public name or IP address of the API}
+      CADDY_TLS: ${CADDY_TLS:-public}
+      CADDY_DEFAULT_SNI: ${CADDY_DEFAULT_SNI:?set CADDY_DEFAULT_SNI to API_HOSTNAME without IPv6 brackets}
+    ports:
+      - "80:80"
+      # TCP only: the firewall (deploy/harden.sh) and its check allow 80/443 tcp.
+      - "443:443"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and the ACME account; kept across restarts so Let's
+      # Encrypt is not asked again (it rate-limits new certificates).
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      default:
+        ipv4_address: 10.201.0.2
+    depends_on:
+      api:
+        condition: service_started
+    logging: *journald
+
+networks:
+  default:
+    ipam:
+      config:
+        # Fixed so FORWARDED_ALLOW_IPS can name Caddy exactly. Outside Docker's
+        # default pools (172.17.0.0/12, 192.168.0.0/16). Other containers get
+        # addresses from the upper half only, so none can take Caddy's.
+        - subnet: 10.201.0.0/24
+          ip_range: 10.201.0.128/25
+
+volumes:
+  caddy-data:
+  caddy-config:

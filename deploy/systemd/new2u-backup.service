@@ -1,0 +1,26 @@
+# Installed by deploy/bootstrap.sh as /etc/systemd/system/new2u-backup.service
+# (WHO-181). Started by new2u-backup.timer; by hand:
+#   sudo systemctl start new2u-backup.service
+#   systemctl status new2u-backup.service      # last run: exit status, log tail
+#   journalctl -u new2u-backup.service         # every run
+[Unit]
+Description=new2u: encrypted database backup to the S3 bucket
+Documentation=file:///srv/new2u/deploy/backup.sh
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+# The deploy writes backup.env only when every backup setting is set. Without
+# it the run is skipped ("condition unmet"), not failed: backups are off.
+ConditionPathExists=/srv/new2u/backup.env
+
+[Service]
+Type=oneshot
+User=deploy
+Group=deploy
+WorkingDirectory=/srv/new2u
+ExecStart=/srv/new2u/deploy/backup.sh run
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+TimeoutStartSec=1h
+SyslogIdentifier=new2u-backup

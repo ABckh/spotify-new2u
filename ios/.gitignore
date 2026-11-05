@@ -1,0 +1,9 @@
+# Xcode per-user and build output
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+*.xcresult
+
+# Per-machine signing: Team ID and bundle id (WHO-16 S-4). Never commit.
+Signing.local.xcconfig

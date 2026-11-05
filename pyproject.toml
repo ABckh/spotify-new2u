@@ -1,0 +1,66 @@
+[project]
+name = "new2u"
+version = "0.1.0"
+description = "Unified consumption history: one timeline across music and video platforms."
+requires-python = "==3.12.*"
+
+# Direct dependencies are pinned exactly. Transitive pins live in requirements.lock,
+# which is what the Docker image and CI install from.
+dependencies = [
+    "fastapi==0.143.0",
+    "uvicorn[standard]==0.34.0",
+    "sqlalchemy==2.0.36",
+    "alembic==1.14.0",
+    "psycopg[binary]==3.2.3",
+    "pydantic-settings==2.7.0",
+    "cryptography==50.0.2",
+    "httpx==0.28.1",
+    # Multipart form parsing for the history-import upload (WHO-104).
+    "python-multipart==0.0.32",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "ruff==0.8.4",
+    "mypy==1.14.0",
+    "pip-audit==2.10.1",
+]
+
+[build-system]
+requires = ["setuptools==75.6.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # import sorting
+    "UP",  # pyupgrade
+    "B",   # bugbear
+    "ASYNC",
+]
+
+[tool.mypy]
+python_version = "3.12"
+# src layout without an editable install: both mypy and pytest are told where
+# the package lives, so `mypy` and `pytest` work straight from a checkout.
+mypy_path = "src"
+files = ["src", "tests", "alembic"]
+strict = true
+# Alembic's generated env.py and migration modules are not annotated upstream.
+warn_unused_ignores = true
+disallow_untyped_decorators = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

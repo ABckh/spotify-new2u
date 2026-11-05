@@ -1,0 +1,80 @@
+# Reverse proxy for the VPS (WHO-175, takes over WHO-51). Mounted read-only into
+# the caddy service of docker-compose.vps.yml.
+#
+# API_HOSTNAME: the public name or IP address of the API, e.g. api.example.org,
+# 203.0.113.10, or an IPv6 address in brackets, [2001:db8::10]. Caddy gets a
+# Let's Encrypt certificate for it, which needs 80 and 443 open (and, for a
+# name, its DNS record pointing at the server).
+#
+# CADDY_TLS picks the certificate (scripts/deploy-remote.sh sets it):
+#   public     a name: Caddy's default, automatic HTTPS from Let's Encrypt.
+#   public_ip  an IP address: Let's Encrypt's `shortlived` profile, the only
+#              one it issues IP certificates under (WHO-180). See the snippet.
+#   internal   Caddy's own local CA, for test targets without a public name
+#              (the CI bootstrap job); clients must then skip verification
+#              (curl -k) or trust Caddy's root.
+#
+# {$VAR} is replaced before the file is parsed, so the import below picks one
+# of the snippets by name.
+
+{
+	# The certificate for clients that send no SNI, which is every client of
+	# an IP address (TLS has no SNI for IPs). Without it Caddy looks the
+	# certificate up by the address the connection arrived on, which inside
+	# Docker is the container's own (10.201.0.2), and the handshake fails.
+	# API_HOSTNAME without the brackets of an IPv6 address; deploy-remote.sh
+	# sets it.
+	default_sni {$CADDY_DEFAULT_SNI}
+
+	# Caddy's error log writes the full request URI, query string included,
+	# whenever reverse_proxy fails (each deploy window, a crashed API). That
+	# catches /auth/spotify/callback?code=...&state=..., which the app itself
+	# never logs (WHO-177 finding 3). There is no access log either.
+	log default {
+		exclude http.log.error
+	}
+}
+
+(tls_public) {
+	# Caddy's default: automatic HTTPS with a publicly trusted certificate.
+}
+
+(tls_public_ip) {
+	# Without an explicit issuer Caddy gives an IP address a certificate from
+	# its internal CA, which no client trusts. Let's Encrypt issues for IPs
+	# since 2026-01-15, only under the `shortlived` profile: about 6 days
+	# (160 h), http-01 or tls-alpn-01 only. Caddy renews by Let's Encrypt's
+	# renewal info (ARI), or else with a third of the lifetime (about 53 h)
+	# left, checking every 10 minutes. No fallback CA: ZeroSSL's ACME has no
+	# IP certificates.
+	tls {
+		issuer acme {
+			profile shortlived
+		}
+	}
+}
+
+(tls_internal) {
+	tls internal
+}
+
+{$API_HOSTNAME} {
+	import tls_{$CADDY_TLS:public}
+
+	# HTTPS only for a year (WHO-177 finding 4). No includeSubDomains and no
+	# preload: the owner may not control every name under the domain.
+	header Strict-Transport-Security "max-age=31536000"
+
+	# Caddy sets X-Forwarded-For to the client address it saw and drops any
+	# value the client sent, so uvicorn (FORWARDED_ALLOW_IPS = Caddy's fixed
+	# address) gets the real client IP for the sign-in rate limits.
+	# The history upload (POST /v1/spotify/history-import, WHO-104) is the
+	# only large body: at most 200 MB of file plus its multipart framing. The
+	# API checks the same limit; this stops a larger body before it reaches
+	# the API at all.
+	request_body {
+		max_size 201MB
+	}
+
+	reverse_proxy api:8000
+}

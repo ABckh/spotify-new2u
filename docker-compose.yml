@@ -1,0 +1,95 @@
+# Local and single-user VPS. Three services: postgres, api, poller.
+# The poller is a separate process so the API can restart without stopping ingestion.
+
+services:
+  postgres:
+    # postgres:16.15-alpine, pinned by the digest of the multi-arch index.
+    image: postgres@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36
+    restart: unless-stopped
+    # PRD P12: the database's own log must not hold what the user played.
+    # terse drops DETAIL ("Failing row contains (<title>, ...)", "Key (...)=(...)"),
+    # HINT, QUERY and CONTEXT; panic means no error ever logs its STATEMENT.
+    command:
+      - postgres
+      - -c
+      - log_error_verbosity=terse
+      - -c
+      - log_min_error_statement=panic
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      # Exposed on loopback only, for psql and for running the checks on the host.
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    command:
+      - uvicorn
+      - app.api.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      # Client IPs for the sign-in rate limits (WHO-36 F2): X-Forwarded-For is
+      # believed only from the peers in FORWARDED_ALLOW_IPS (from .env).
+      - --proxy-headers
+    env_file:
+      - .env
+    environment:
+      # Inside the compose network the database host is the service name.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # Uploaded history exports wait here for the poller's import worker (WHO-104).
+      HISTORY_IMPORT_DIR: /var/lib/new2u/history-imports
+    volumes:
+      - history-imports:/var/lib/new2u/history-imports
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    healthcheck:
+      # python rather than curl: the slim base image has no curl.
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz').read()
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  poller:
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "app.poller"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      HISTORY_IMPORT_DIR: /var/lib/new2u/history-imports
+    volumes:
+      - history-imports:/var/lib/new2u/history-imports
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Give the loop time to finish a tick before SIGKILL.
+    stop_grace_period: 30s
+
+volumes:
+  postgres-data:
+  # A file in it lives until its import ends, at most 24 h (WHO-104). A disk
+  # image backup of the app server (a provider's boot-volume backup) taken
+  # meanwhile holds it as long as that backup is kept. The nightly database
+  # dump (deploy/backup.sh) never includes it.
+  history-imports:

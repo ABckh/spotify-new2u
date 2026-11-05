@@ -1,0 +1,13 @@
+# Installed and enabled by deploy/bootstrap.sh (WHO-181).
+#   systemctl list-timers new2u-backup.timer   # last and next run
+[Unit]
+Description=new2u: nightly encrypted database backup
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 UTC
+RandomizedDelaySec=15min
+# A night missed while the server was off runs at the next boot.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,139 @@
+name: Deploy
+
+# Production deploy (WHO-176), with scripts/deploy-remote.sh: the same script
+# the CI test target runs in ci.yml's bootstrap job.
+#
+# Only by hand (WHO-177 finding 1): Actions > Deploy > Run workflow, on main,
+# with the commit whose image to deploy. Nothing calls this automatically.
+#
+# The guards:
+# - the `production` environment holds every secret and variable this job
+#   reads, and its deployment-branch policy allows `main` only. That is the
+#   control: a run from any other branch, whatever its copy of this file
+#   says, gets no secrets (docs/self-hosting.md "Deploy credentials").
+# - the first step fails unless the run is on main (defense in depth).
+# - the repository variable DEPLOY_ENABLED must be "true" (the owner sets it).
+#
+# The image is deployed by digest, the one ci.yml's image job printed when it
+# pushed the commit's image (WHO-177 finding 9), never by its tag.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full commit SHA on main whose image to deploy
+        required: true
+        type: string
+      skip_migrations:
+        description: Skip migrations (turn on when going back to an older commit)
+        required: false
+        type: boolean
+        default: false
+      image:
+        description: >-
+          Optional, only when CI's record of the digest has expired (90 days):
+          ghcr.io/OWNER/new2u@sha256:... of that commit (docs/self-hosting.md "Roll back")
+        required: false
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  deploy:
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    environment: production
+    # One deploy at a time; a newer one waits instead of cancelling a running one.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # The server pulls the image with this job's token, which expires with the job.
+      packages: read
+      # Reads the image digest that ci.yml's run for this commit kept.
+      actions: read
+    steps:
+      - name: Only from main
+        run: |
+          [[ "$GITHUB_REF" == refs/heads/main ]] || { echo "Deploy runs on main only, not $GITHUB_REF" >&2; exit 1; }
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Image digest
+        # From the successful CI push run of this commit on main, unless given.
+        env:
+          SHA: ${{ inputs.sha }}
+          IMAGE: ${{ inputs.image }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "sha must be a full 40-character commit SHA" >&2; exit 1; }
+          if [[ -z "$IMAGE" ]]; then
+            run_id="$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --event push \
+              --commit "$SHA" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+            [[ -n "$run_id" ]] || { echo "no successful CI run on main for $SHA" >&2; exit 1; }
+            gh run download "$run_id" -R "$GITHUB_REPOSITORY" -n image-ref -D "$RUNNER_TEMP/image"
+            IMAGE="$(<"$RUNNER_TEMP/image/image-ref")"
+          fi
+          [[ "$IMAGE" =~ ^ghcr\.io/${GITHUB_REPOSITORY_OWNER,,}/new2u@sha256:[0-9a-f]{64}$ ]] \
+            || { echo "not this repository's image by digest: $IMAGE" >&2; exit 1; }
+          echo "API_IMAGE=$IMAGE" >>"$GITHUB_ENV"
+          printf 'Deploying `%s` (commit %s)\n' "$IMAGE" "$SHA" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy
+        # tests/test_deploy_files.py checks that this list matches deploy/env.template.
+        env:
+          SKIP_MIGRATIONS: ${{ inputs.skip_migrations && 'true' || 'false' }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Server
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          # deploy/env.template: input
+          API_HOSTNAME: ${{ vars.API_HOSTNAME }}
+          SPOTIFY_REDIRECT_URI: ${{ vars.SPOTIFY_REDIRECT_URI }}
+          APP_CALLBACK_URL: ${{ vars.APP_CALLBACK_URL }}
+          # deploy/env.template: default, unset unless the database has a server of its own
+          DATABASE_HOST: ${{ vars.DATABASE_HOST }}
+          # deploy/env.template: secret
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
+          SESSION_TOKEN_SECRET: ${{ secrets.SESSION_TOKEN_SECRET }}
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          SPOTIFY_ALLOWED_ACCOUNT_IDS: ${{ secrets.SPOTIFY_ALLOWED_ACCOUNT_IDS }}
+          # Nightly backup (WHO-181): all six or none; none means backups off.
+          BACKUP_S3_ENDPOINT: ${{ vars.BACKUP_S3_ENDPOINT }}
+          BACKUP_S3_REGION: ${{ vars.BACKUP_S3_REGION }}
+          BACKUP_S3_BUCKET: ${{ vars.BACKUP_S3_BUCKET }}
+          BACKUP_S3_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+          BACKUP_S3_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
+          BACKUP_AGE_RECIPIENT: ${{ vars.BACKUP_AGE_RECIPIENT }}
+          # Optional, with the six (WHO-182): on/off, and the dead-man's-switch URL.
+          BACKUP_PRUNE: ${{ vars.BACKUP_PRUNE }}
+          BACKUP_HEARTBEAT_URL: ${{ secrets.BACKUP_HEARTBEAT_URL }}
+          # deploy/env.template: default (optional; unset means the app's default)
+          LOG_LEVEL: ${{ vars.LOG_LEVEL }}
+          API_DOCS_ENABLED: ${{ vars.API_DOCS_ENABLED }}
+          SESSION_TOKEN_TTL_SECONDS: ${{ vars.SESSION_TOKEN_TTL_SECONDS }}
+          REFRESH_TOKEN_TTL_SECONDS: ${{ vars.REFRESH_TOKEN_TTL_SECONDS }}
+          OAUTH_LOGIN_TTL_SECONDS: ${{ vars.OAUTH_LOGIN_TTL_SECONDS }}
+          LOGIN_RATE_LIMIT_PER_MINUTE: ${{ vars.LOGIN_RATE_LIMIT_PER_MINUTE }}
+          CLAIM_RATE_LIMIT_PER_MINUTE: ${{ vars.CLAIM_RATE_LIMIT_PER_MINUTE }}
+          MAX_PENDING_LOGINS: ${{ vars.MAX_PENDING_LOGINS }}
+          READ_RATE_LIMIT_PER_MINUTE: ${{ vars.READ_RATE_LIMIT_PER_MINUTE }}
+          EXPORT_RATE_LIMIT_PER_MINUTE: ${{ vars.EXPORT_RATE_LIMIT_PER_MINUTE }}
+          EXPORT_IDLE_TIMEOUT_SECONDS: ${{ vars.EXPORT_IDLE_TIMEOUT_SECONDS }}
+          POLLER_INTERVAL_SECONDS: ${{ vars.POLLER_INTERVAL_SECONDS }}
+          POLLER_NEW_CONNECTION_CHECK_SECONDS: ${{ vars.POLLER_NEW_CONNECTION_CHECK_SECONDS }}
+          MANUAL_POLL_COOLDOWN_SECONDS: ${{ vars.MANUAL_POLL_COOLDOWN_SECONDS }}
+          REAUTH_WARNING_DAYS: ${{ vars.REAUTH_WARNING_DAYS }}
+          HISTORY_IMPORT_CHECK_SECONDS: ${{ vars.HISTORY_IMPORT_CHECK_SECONDS }}
+          COLLECTION_RECORDS_RETENTION_DAYS: ${{ vars.COLLECTION_RECORDS_RETENTION_DAYS }}
+        run: scripts/deploy-remote.sh

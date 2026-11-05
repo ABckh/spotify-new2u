@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Privacy manifest (WHO-16 S-6).
+  - No tracking and no tracking domains: the app talks to our own API,
+    and loads album covers from Spotify's image server, i.scdn.co
+    (WHO-148 decision, option A). i.scdn.co is a content server, not a
+    tracking domain, so it is not listed here.
+  - No collected data types: the app sends nothing about the user to any
+    server except the session token for our own API. Cover requests
+    carry no token, no cookie and no identifier (CoverImageLoader).
+  - Required-reason APIs: UserDefaults, read by DebugFixtures in Debug
+    builds to pick a fixture from the launch arguments. CA92.1 = data the
+    app itself reads and writes.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
